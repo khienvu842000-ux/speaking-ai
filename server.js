@@ -6,11 +6,20 @@ import FormData from "form-data"
 const app = express()
 app.use(express.json())
 
+// 🔥 debug crash
+process.on("uncaughtException", err => {
+  console.error("🔥 UNCAUGHT:", err)
+})
+process.on("unhandledRejection", err => {
+  console.error("🔥 PROMISE ERROR:", err)
+})
+
+// 👉 OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-// 👉 API chấm speaking
+// 👉 API chính
 app.post("/api/grade-speaking", async (req, res) => {
   try {
     const { video_url } = req.body
@@ -22,19 +31,19 @@ app.post("/api/grade-speaking", async (req, res) => {
     console.log("🎥 VIDEO:", video_url)
 
     // ==============================
-    // ✅ 1. tải video (có timeout)
+    // ✅ 1. DOWNLOAD VIDEO
     // ==============================
     const videoRes = await axios.get(video_url, {
       responseType: "arraybuffer",
-      timeout: 15000 // 🔥 tránh treo
+      timeout: 15000
     })
 
     const buffer = Buffer.from(videoRes.data)
 
-    console.log("✅ Download video OK, size:", buffer.length)
+    console.log("✅ Download OK:", buffer.length)
 
     // ==============================
-    // ✅ 2. speech to text
+    // ✅ 2. TRANSCRIBE
     // ==============================
     const formData = new FormData()
     formData.append("file", buffer, {
@@ -60,19 +69,20 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     if (!transcript) {
       return res.json({
-        feedback: "❌ Không nghe rõ, con nói lại giúp cô nhé!"
+        feedback: "❌ Không nghe rõ, con nói lại nhé!"
       })
     }
 
     // ==============================
-    // ✅ 3. AI chấm bài
+    // ✅ 3. CHẤM ĐIỂM
     // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "Bạn là giáo viên tiếng Anh tiểu học. Nhận xét dễ hiểu, thân thiện với trẻ."
+          content:
+            "Bạn là giáo viên tiếng Anh tiểu học. Nhận xét thân thiện, dễ hiểu cho trẻ."
         },
         {
           role: "user",
@@ -98,16 +108,22 @@ Hãy:
     })
 
   } catch (err) {
-    console.error("❌ ERROR FULL:", err)
+    console.error("❌ ERROR:", err.response?.data || err.message)
 
     return res.status(500).json({
-      error: "Lỗi xử lý video",
+      error: "Lỗi xử lý",
       detail: err.response?.data || err.message
     })
   }
 })
 
-const PORT = process.env.PORT || 3000
+// 👉 test nhanh
+app.get("/", (req, res) => {
+  res.send("🚀 Speaking AI API đang chạy")
+})
+
+// 👉 start server
+const PORT = process.env.PORT || 8080
 app.listen(PORT, () => {
   console.log("🚀 Server chạy ở port", PORT)
 })
