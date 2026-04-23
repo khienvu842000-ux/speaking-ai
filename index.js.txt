@@ -1,0 +1,66 @@
+import express from "express"
+import axios from "axios"
+import OpenAI from "openai"
+import { Blob } from "buffer"
+
+const app = express()
+app.use(express.json())
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
+
+app.post("/api/grade-speaking", async (req, res) => {
+  try {
+    const { video_url } = req.body
+
+    console.log("VIDEO:", video_url)
+
+    const videoRes = await axios.get(video_url, {
+      responseType: "arraybuffer"
+    })
+
+    const buffer = Buffer.from(videoRes.data)
+
+    const transcriptRes = await openai.audio.transcriptions.create({
+      file: new Blob([buffer]),
+      model: "whisper-1"
+    })
+
+    const transcript = transcriptRes.text
+
+    const analysis = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Bạn là giáo viên tiếng Anh cho trẻ em"
+        },
+        {
+          role: "user",
+          content: `
+Bài nói: ${transcript}
+
+Hãy:
+- chấm điểm (0-10)
+- nhận xét
+- sửa lỗi
+- gợi ý cải thiện
+`
+        }
+      ]
+    })
+
+    const feedback = analysis.choices[0].message.content
+
+    res.json({ feedback })
+
+  } catch (err) {
+    console.error(err)
+    res.json({ feedback: "❌ Lỗi xử lý video" })
+  }
+})
+
+app.listen(3000, () => {
+  console.log("Server chạy")
+})
