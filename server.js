@@ -6,7 +6,6 @@ import FormData from "form-data"
 const app = express()
 app.use(express.json())
 
-// 👉 Khởi tạo OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
@@ -22,18 +21,24 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     console.log("🎥 VIDEO:", video_url)
 
-    // 👉 1. tải video
+    // ==============================
+    // ✅ 1. tải video (có timeout)
+    // ==============================
     const videoRes = await axios.get(video_url, {
-      responseType: "arraybuffer"
+      responseType: "arraybuffer",
+      timeout: 15000 // 🔥 tránh treo
     })
 
     const buffer = Buffer.from(videoRes.data)
 
-    // 👉 2. chuyển speech → text
+    console.log("✅ Download video OK, size:", buffer.length)
+
+    // ==============================
+    // ✅ 2. speech to text
+    // ==============================
     const formData = new FormData()
     formData.append("file", buffer, {
-      filename: "audio.mp4",
-      contentType: "audio/mp4"
+      filename: "audio.mp4"
     })
     formData.append("model", "gpt-4o-transcribe")
 
@@ -45,7 +50,7 @@ app.post("/api/grade-speaking", async (req, res) => {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        maxBodyLength: Infinity
+        timeout: 20000
       }
     )
 
@@ -55,11 +60,13 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     if (!transcript) {
       return res.json({
-        feedback: "❌ Không nhận diện được giọng nói"
+        feedback: "❌ Không nghe rõ, con nói lại giúp cô nhé!"
       })
     }
 
-    // 👉 3. AI chấm bài
+    // ==============================
+    // ✅ 3. AI chấm bài
+    // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -69,15 +76,13 @@ app.post("/api/grade-speaking", async (req, res) => {
         },
         {
           role: "user",
-          content: `
-Bài nói: ${transcript}
+          content: `Bài nói: ${transcript}
 
 Hãy:
 - Chấm điểm (0-10)
 - Nhận xét ngắn gọn
 - Chỉ ra lỗi sai
-- Gợi ý cải thiện
-`
+- Gợi ý cải thiện`
         }
       ]
     })
@@ -85,13 +90,15 @@ Hãy:
     const feedback =
       analysis.choices?.[0]?.message?.content || "Không có phản hồi"
 
+    console.log("📊 FEEDBACK:", feedback)
+
     return res.json({
       transcript,
       feedback
     })
 
   } catch (err) {
-    console.error("❌ ERROR:", err.response?.data || err.message)
+    console.error("❌ ERROR FULL:", err)
 
     return res.status(500).json({
       error: "Lỗi xử lý video",
@@ -100,7 +107,6 @@ Hãy:
   }
 })
 
-// 👉 PORT cho Railway
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
   console.log("🚀 Server chạy ở port", PORT)
