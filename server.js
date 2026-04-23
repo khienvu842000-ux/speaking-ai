@@ -43,7 +43,7 @@ app.post("/api/grade-speaking", async (req, res) => {
     console.log("✅ Download OK:", buffer.length)
 
     // ==============================
-    // ✅ 2. TRANSCRIBE
+    // ✅ 2. TRANSCRIBE (speech → text)
     // ==============================
     const formData = new FormData()
     formData.append("file", buffer, {
@@ -74,34 +74,73 @@ app.post("/api/grade-speaking", async (req, res) => {
     }
 
     // ==============================
-    // ✅ 3. CHẤM ĐIỂM
+    // ✅ 3. AI CHẤM BÀI (BẢN CHUẨN KAISA)
     // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content:
-            "Bạn là giáo viên tiếng Anh tiểu học. Nhận xét thân thiện, dễ hiểu cho trẻ."
+          content: `
+Bạn là giáo viên tiếng Anh cho học sinh tiểu học (6-12 tuổi).
+
+Quy tắc:
+- Ngôn ngữ đơn giản, dễ hiểu
+- Luôn tích cực, động viên
+- Không chê nặng
+- Giải thích ngắn gọn
+- Tổng phản hồi dưới 120 từ
+`
         },
         {
           role: "user",
-          content: `Bài nói: ${transcript}
+          content: `
+Bài nói của học sinh:
+"${transcript}"
 
-Hãy:
-- Chấm điểm (0-10)
-- Nhận xét ngắn gọn
-- Chỉ ra lỗi sai
-- Gợi ý cải thiện`
+Hãy đánh giá theo format CHÍNH XÁC:
+
+🎯 CHẤM ĐIỂM:
+- Phát âm: x/10
+- Trôi chảy: x/10
+- Ngữ pháp: x/10
+- Từ vựng: x/10
+
+👉 Tổng điểm: x/10
+
+📌 NHẬN XÉT:
+(2-3 câu đơn giản, thân thiện)
+
+❌ LỖI SAI:
+- viết lại câu sai
+- sửa lại câu đúng
+- giải thích 1 câu
+
+💡 GỢI Ý:
+- đưa ra 1-2 câu nói tốt hơn
+
+⭐ ĐÁNH GIÁ:
+- dùng sao (⭐ 1-5)
+
+👉 Kết thúc bằng lời khen
+`
         }
       ]
     })
 
-    const feedback =
+    let feedback =
       analysis.choices?.[0]?.message?.content || "Không có phản hồi"
+
+    // 👉 tránh lỗi Zalo do quá dài
+    if (feedback.length > 1200) {
+      feedback = feedback.slice(0, 1200)
+    }
 
     console.log("📊 FEEDBACK:", feedback)
 
+    // ==============================
+    // ✅ 4. TRẢ KẾT QUẢ
+    // ==============================
     return res.json({
       transcript,
       feedback
