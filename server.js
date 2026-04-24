@@ -2,14 +2,32 @@ import express from "express"
 import axios from "axios"
 import OpenAI from "openai"
 import FormData from "form-data"
+import ffmpeg from "fluent-ffmpeg"
+import ffmpegPath from "ffmpeg-static"
+import fs from "fs"
 
 const app = express()
 app.use(express.json())
 
+ffmpeg.setFfmpegPath(ffmpegPath)
+
+// 🔥 debug crash
+process.on("uncaughtException", err => {
+  console.error("🔥 UNCAUGHT:", err)
+})
+
+process.on("unhandledRejection", err => {
+  console.error("🔥 PROMISE ERROR:", err)
+})
+
+// 👉 OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
+// ==============================
+// 🚀 API CHÍNH
+// ==============================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
     const { video_url } = req.body
@@ -18,56 +36,74 @@ app.post("/api/grade-speaking", async (req, res) => {
       return res.status(400).json({ error: "Thiếu video_url" })
     }
 
+    console.log("🎥 VIDEO:", video_url)
+
+    // ==============================
+    // ✅ 1. DOWNLOAD VIDEO
+    // ==============================
     const videoRes = await axios.get(video_url, {
       responseType: "arraybuffer",
       timeout: 30000
     })
 
     const buffer = Buffer.from(videoRes.data)
+    console.log("✅ Download OK:", buffer.length)
 
-    // ❗ chặn video quá lớn
-    if (buffer.length > 30 * 1024 * 1024) {
+    // ==============================
+    // ✅ 2. CONVERT VIDEO → AUDIO
+    // ==============================
+    const inputPath = "/tmp/input.mp4"
+    const outputPath = "/tmp/audio.mp3"
+
+    fs.writeFileSync(inputPath, buffer)
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .noVideo()
+        .audioCodec("libmp3lame")
+        .format("mp3")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(outputPath)
+    })
+
+    const audioBuffer = fs.readFileSync(outputPath)
+
+    console.log("🎧 Convert audio OK")
+
+    // ==============================
+    // ✅ 3. TRANSCRIBE
+    // ==============================
+    const formData = new FormData()
+    formData.append("file", audioBuffer, {
+      filename: "audio.mp3"
+    })
+    formData.append("model", "gpt-4o-transcribe")
+
+    const transcriptRes = await axios.post(
+      "https://api.openai.com/v1/audio/transcriptions",
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...formData.getHeaders()
+        },
+        timeout: 60000
+      }
+    )
+
+    const transcript = transcriptRes.data.text || ""
+
+    console.log("📝 TEXT:", transcript)
+
+    if (!transcript) {
       return res.json({
-        feedback: "❌ Video quá dài (tối đa ~3 phút)"
+        feedback: "❌ Không nghe rõ, con nói lại nhé!"
       })
     }
 
     // ==============================
-    // 🔥 CHIA CHUNK
-    // ==============================
-    const chunkSize = 5 * 1024 * 1024
-    let fullTranscript = ""
-
-    for (let i = 0; i < buffer.length; i += chunkSize) {
-      const chunk = buffer.slice(i, i + chunkSize)
-
-      const formData = new FormData()
-      formData.append("file", chunk, { filename: "audio.mp4" })
-      formData.append("model", "gpt-4o-transcribe")
-
-      const resTrans = await axios.post(
-        "https://api.openai.com/v1/audio/transcriptions",
-        formData,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            ...formData.getHeaders()
-          },
-          timeout: 30000
-        }
-      )
-
-      fullTranscript += resTrans.data.text + " "
-    }
-
-    if (!fullTranscript) {
-      return res.json({ feedback: "❌ Không nghe rõ nội dung" })
-    }
-
-    console.log("📝 TEXT:", fullTranscript)
-
-    // ==============================
-    // 🤖 AI CHẤM (NÂNG CẤP CHUẨN GIÁO VIÊN)
+    // ✅ 4. AI CHẤM (LEVEL GIÁO VIÊN)
     // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -76,37 +112,36 @@ app.post("/api/grade-speaking", async (req, res) => {
         {
           role: "system",
           content: `
-Bạn là giáo viên tiếng Anh tiểu học tại trung tâm KAISA.
+Bạn là GIÁO VIÊN AI của trung tâm Anh ngữ KAISA.
 
 Nguyên tắc:
 - Nhận xét như giáo viên thật
-- Ngắn gọn, dễ hiểu
+- Ưu tiên sửa lỗi quan trọng
 - Không dùng từ khó
-- Luôn tích cực
-- Chỉ sửa lỗi quan trọng nhất
-- Không đoán phát âm nếu không chắc
-- Tổng nội dung dưới 120 từ
+- Luôn động viên học sinh
+- Không đoán nếu không chắc
+- Tổng nội dung < 120 từ
 
 Thang điểm:
-0-4: yếu
-5-6: trung bình
-7-8: khá
-9-10: tốt
+0–4 yếu
+5–6 trung bình
+7–8 khá
+9–10 tốt
 `
         },
         {
           role: "user",
           content: `
-Bài nói của học sinh:
-"${fullTranscript}"
+Bài nói:
+"${transcript}"
 
 Hãy chấm theo format:
 
 🎯 CHẤM ĐIỂM:
-- Phát âm: x/10 (độ rõ)
-- Trôi chảy: x/10 (ngập ngừng hay không)
-- Ngữ pháp: x/10 (đúng cấu trúc)
-- Từ vựng: x/10 (đa dạng hay lặp)
+- Phát âm: x/10
+- Trôi chảy: x/10
+- Ngữ pháp: x/10
+- Từ vựng: x/10
 
 👉 Tổng điểm: x/10
 
@@ -114,14 +149,14 @@ Hãy chấm theo format:
 (1 câu khen + 1 câu góp ý)
 
 🔊 PHÁT ÂM:
-- nếu có lỗi: chỉ ra 1 lỗi rõ nhất
+- chỉ ra lỗi phát âm rõ nhất (vd: /θ/, /s/)
 - nếu không chắc: "Phát âm khá rõ"
 
 📌 NGỮ PHÁP:
-- chỉ ra lỗi quan trọng nhất
+- lỗi chính
 
 ❌ LỖI TRỌNG TÂM:
-- 1 câu sai → sửa lại đúng
+- câu sai → sửa đúng
 
 📈 CẦN CẢI THIỆN:
 - 2 điểm cụ thể
@@ -143,17 +178,20 @@ Hãy chấm theo format:
     })
 
     let feedback =
-      analysis.choices?.[0]?.message?.content || "Không có kết quả"
+      analysis.choices?.[0]?.message?.content || "Không có phản hồi"
 
-    // ❗ tránh lỗi Zalo
+    // 👉 tránh lỗi Zalo
     if (feedback.length > 1200) {
       feedback = feedback.slice(0, 1200)
     }
 
     console.log("📊 FEEDBACK:", feedback)
 
+    // ==============================
+    // ✅ 5. TRẢ KẾT QUẢ
+    // ==============================
     return res.json({
-      transcript: fullTranscript,
+      transcript,
       feedback
     })
 
@@ -167,6 +205,13 @@ Hãy chấm theo format:
   }
 })
 
-app.listen(process.env.PORT || 8080, () => {
-  console.log("🚀 Railway running")
+// 👉 test
+app.get("/", (req, res) => {
+  res.send("🚀 Speaking AI KAISA đang chạy")
+})
+
+// 👉 start
+const PORT = process.env.PORT || 8080
+app.listen(PORT, () => {
+  console.log("🚀 Server chạy ở port", PORT)
 })
