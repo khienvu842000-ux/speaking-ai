@@ -75,33 +75,40 @@ app.post("/api/grade-speaking", async (req, res) => {
     }
 
     // ==============================
-    // ✅ 3. AI CHẤM BÀI (KAISA AI TEACHER)
+    // ✅ 3. AI CHẤM BÀI (LEVEL GIÁO VIÊN THẬT)
     // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0.4,
+      temperature: 0.3,
       messages: [
         {
           role: "system",
           content: `
-Bạn là GIÁO VIÊN AI của trung tâm Anh ngữ KAISA.
+Bạn là GIÁO VIÊN AI của trung tâm Anh ngữ KAISA với 10 năm kinh nghiệm dạy trẻ em.
 
-Nhiệm vụ:
-- Chấm bài nói tiếng Anh cho học sinh tiểu học
-- Nhận xét dễ hiểu, thân thiện
+Nguyên tắc:
+- Đánh giá theo tiêu chí rõ ràng
+- Ưu tiên sửa lỗi quan trọng nhất
+- Nhận xét ngắn gọn, dễ hiểu
 - Không dùng từ khó
-- Luôn động viên học sinh
+- Luôn tích cực, không chê nặng
 - Không đoán phát âm nếu không chắc
-- Tổng nội dung dưới 130 từ
+- Tổng nội dung dưới 120 từ
+
+Thang điểm:
+0–4: yếu
+5–6: trung bình
+7–8: khá
+9–10: tốt
 `
         },
         {
           role: "user",
           content: `
-Bài nói của học sinh:
+Bài nói:
 "${transcript}"
 
-Hãy đánh giá theo format CHÍNH XÁC:
+Hãy chấm bài theo format:
 
 🎯 CHẤM ĐIỂM:
 - Phát âm: x/10
@@ -112,32 +119,31 @@ Hãy đánh giá theo format CHÍNH XÁC:
 👉 Tổng điểm: x/10
 
 📌 NHẬN XÉT:
-(2 câu ngắn, tích cực, dễ hiểu)
+(1 câu khen + 1 câu góp ý)
 
 🔊 PHÁT ÂM:
-- nếu có lỗi: chỉ ra tối đa 2 từ sai
-- hướng dẫn cách đọc đơn giản (ví dụ /θ/, /ʃ/)
-- nếu không rõ: "Phát âm khá rõ"
+- chỉ ra 1 lỗi rõ nhất (nếu có)
+- nếu không chắc: "Phát âm khá rõ"
 
 📌 NGỮ PHÁP:
-- chỉ ra 1 lỗi quan trọng nhất (thiếu chủ ngữ / sai thì)
+- chỉ ra lỗi quan trọng nhất
 
-❌ LỖI SAI:
-- câu sai → sửa lại câu đúng
+❌ LỖI TRỌNG TÂM:
+- 1 câu sai → sửa lại
 
 📈 CẦN CẢI THIỆN:
-- nói rõ học sinh cần cải thiện gì từ bài nói
+- 2 điểm cụ thể
 
-💡 GỢI Ý LUYỆN TẬP:
-- đưa 1 cách luyện cụ thể
+💡 BÀI TẬP:
+- 1 cách luyện đơn giản
 
 💡 CÂU MẪU:
-- 1 câu nói tốt hơn học sinh có thể dùng
+- 1 câu tốt hơn
 
 ⭐ ĐÁNH GIÁ:
 - ⭐ 1–5
 
-👉 Kết thúc bằng:
+👉 Kết thúc:
 "Giáo viên AI KAISA luôn đồng hành cùng con 💙"
 `
         }
