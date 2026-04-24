@@ -13,10 +13,11 @@ app.use(express.json())
 
 ffmpeg.setFfmpegPath(ffmpegPath)
 
-// 🔥 chống crash toàn server
+// 🔥 chống crash
 process.on("uncaughtException", err => {
   console.error("🔥 UNCAUGHT:", err)
 })
+
 process.on("unhandledRejection", err => {
   console.error("🔥 PROMISE ERROR:", err)
 })
@@ -27,9 +28,9 @@ const openai = new OpenAI({
 })
 
 
-// ===============================
-// 🎥 CHẤM VIDEO (FIX FULL)
-// ===============================
+// ========================================
+// 🎥 API CHẤM VIDEO (IPA + GIÁO VIÊN THẬT)
+// ========================================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
     const { video_url } = req.body
@@ -40,39 +41,32 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     console.log("🎥 VIDEO:", video_url)
 
-    // ==============================
-    // ✅ DOWNLOAD VIDEO
-    // ==============================
+    // ======================
+    // 1. DOWNLOAD
+    // ======================
     let buffer
-
     try {
       const videoRes = await axios.get(video_url, {
         responseType: "arraybuffer",
         timeout: 60000
       })
-
       buffer = Buffer.from(videoRes.data)
-
-      console.log("✅ Download OK:", buffer.length)
-
     } catch (err) {
-      console.error("❌ DOWNLOAD ERROR:", err)
       return res.json({ feedback: "❌ Không tải được video" })
     }
 
-    // ❗ chặn file quá lớn (tránh crash)
+    // ❗ giới hạn an toàn
     if (buffer.length > 50 * 1024 * 1024) {
       return res.json({
-        feedback: "❌ Video quá dài (giới hạn ~5 phút)"
+        feedback: "❌ Video quá dài (tối đa ~5 phút)"
       })
     }
 
-    // ==============================
-    // ✅ CONVERT VIDEO → AUDIO (AN TOÀN)
-    // ==============================
-    const tempDir = os.tmpdir()
-    const inputPath = path.join(tempDir, "input.mp4")
-    const outputPath = path.join(tempDir, "audio.mp3")
+    // ======================
+    // 2. CONVERT → AUDIO
+    // ======================
+    const inputPath = path.join(os.tmpdir(), "input.mp4")
+    const outputPath = path.join(os.tmpdir(), "audio.mp3")
 
     try {
       fs.writeFileSync(inputPath, buffer)
@@ -83,38 +77,20 @@ app.post("/api/grade-speaking", async (req, res) => {
           .audioCodec("libmp3lame")
           .format("mp3")
           .on("end", resolve)
-          .on("error", (err) => {
-            console.error("❌ FFMPEG ERROR:", err)
-            reject(err)
-          })
+          .on("error", reject)
           .save(outputPath)
       })
-
-      console.log("🎧 Convert audio OK")
-
     } catch (err) {
-      console.error("❌ CONVERT ERROR:", err)
       return res.json({
         feedback: "❌ Video lỗi hoặc không xử lý được"
       })
     }
 
-    // ==============================
-    // ✅ ĐỌC AUDIO
-    // ==============================
-    let audioBuffer
+    const audioBuffer = fs.readFileSync(outputPath)
 
-    try {
-      audioBuffer = fs.readFileSync(outputPath)
-    } catch (err) {
-      return res.json({
-        feedback: "❌ Không đọc được audio"
-      })
-    }
-
-    // ==============================
-    // ✅ TRANSCRIBE
-    // ==============================
+    // ======================
+    // 3. TRANSCRIBE
+    // ======================
     let transcript = ""
 
     try {
@@ -124,7 +100,7 @@ app.post("/api/grade-speaking", async (req, res) => {
       })
       formData.append("model", "gpt-4o-transcribe")
 
-      const transcriptRes = await axios.post(
+      const result = await axios.post(
         "https://api.openai.com/v1/audio/transcriptions",
         formData,
         {
@@ -136,12 +112,8 @@ app.post("/api/grade-speaking", async (req, res) => {
         }
       )
 
-      transcript = transcriptRes.data.text || ""
-
-      console.log("📝 TEXT:", transcript)
-
+      transcript = result.data.text || ""
     } catch (err) {
-      console.error("❌ TRANSCRIBE ERROR:", err.response?.data || err.message)
       return res.json({
         feedback: "❌ Không nhận diện được giọng nói"
       })
@@ -153,9 +125,11 @@ app.post("/api/grade-speaking", async (req, res) => {
       })
     }
 
-    // ==============================
-    // 🤖 AI CHẤM (LEVEL GIÁO VIÊN)
-    // ==============================
+    console.log("📝 TEXT:", transcript)
+
+    // ======================
+    // 4. AI CHẤM IPA LEVEL CAO
+    // ======================
     let feedback = "❌ Không chấm được"
 
     try {
@@ -166,31 +140,57 @@ app.post("/api/grade-speaking", async (req, res) => {
           {
             role: "system",
             content: `
-Bạn là GIÁO VIÊN AI của trung tâm KAISA.
+Bạn là GIÁO VIÊN PHÁT ÂM CHUYÊN SÂU (IPA) của trung tâm KAISA.
 
-- Nhận xét như giáo viên thật
-- Dễ hiểu cho trẻ em
-- Không dùng từ khó
+Nguyên tắc:
+- Phân tích như giáo viên thật
+- Chỉ ra lỗi phát âm nếu chắc chắn
+- Không đoán nếu không rõ
+- Dùng từ dễ hiểu cho trẻ
 - Luôn động viên
-- Không đoán nếu không chắc
-- Tổng nội dung < 120 từ
+- Tổng nội dung < 150 từ
 `
           },
           {
             role: "user",
             content: `
+Bài nói:
 "${transcript}"
 
-Chấm:
-- Phát âm
-- Trôi chảy
-- Ngữ pháp
-- Từ vựng
+Hãy chấm:
 
-+ tổng điểm
-+ lỗi chính
-+ cách cải thiện
-+ câu mẫu tốt hơn
+🎯 CHẤM ĐIỂM:
+- Phát âm: x/10
+- Trôi chảy: x/10
+- Ngữ pháp: x/10
+- Từ vựng: x/10
+
+👉 Tổng điểm: x/10
+
+🔊 PHÁT ÂM CHI TIẾT:
+- 1 lỗi rõ nhất (IPA nếu có)
+- cách sửa
+
+📌 NHẬN XÉT:
+(1 câu khen + 1 góp ý)
+
+❌ LỖI CHÍNH:
+- 1 câu sai → sửa lại
+
+📈 CẦN CẢI THIỆN:
+- 2 điểm
+
+💡 BÀI TẬP:
+- 1 bài luyện
+
+💡 CÂU MẪU:
+- 1 câu tốt hơn
+
+⭐ ĐÁNH GIÁ:
+⭐ 1–5
+
+👉 Kết thúc:
+"Giáo viên AI KAISA luôn đồng hành cùng con 💙"
 `
           }
         ]
@@ -211,9 +211,6 @@ Chấm:
 
     console.log("📊 FEEDBACK:", feedback)
 
-    // ==============================
-    // ✅ TRẢ KẾT QUẢ
-    // ==============================
     return res.json({
       transcript,
       feedback
@@ -229,9 +226,9 @@ Chấm:
 })
 
 
-// ===============================
-// 💬 CHAT AI GIA SƯ
-// ===============================
+// ========================================
+// 💬 CHAT AI GIA SƯ (VIỆT + ANH)
+// ========================================
 app.post("/api/chat", async (req, res) => {
   try {
     const { text } = req.body
@@ -244,9 +241,9 @@ app.post("/api/chat", async (req, res) => {
           content: `
 Bạn là giáo viên AI của KAISA.
 
-- Nếu học sinh nói tiếng Việt → trả lời tiếng Việt
-- Nếu nói tiếng Anh → trả lời tiếng Anh
-- Giải thích đơn giản, dễ hiểu
+- Học sinh nói tiếng Việt → trả lời tiếng Việt
+- Học sinh nói tiếng Anh → trả lời tiếng Anh
+- Giải thích đơn giản
 - Thân thiện
 `
         },
@@ -262,8 +259,6 @@ Bạn là giáo viên AI của KAISA.
     })
 
   } catch (err) {
-    console.error("❌ CHAT ERROR:", err)
-
     res.json({
       reply: "❌ Cô chưa trả lời được"
     })
@@ -271,13 +266,13 @@ Bạn là giáo viên AI của KAISA.
 })
 
 
-// ===============================
+// ========================================
 app.get("/", (req, res) => {
   res.send("🚀 KAISA AI running")
 })
 
-// ===============================
 const PORT = process.env.PORT || 8080
+
 app.listen(PORT, () => {
   console.log("🚀 Server chạy ở port", PORT)
 })
