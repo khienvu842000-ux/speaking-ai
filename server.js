@@ -6,16 +6,21 @@ import FormData from "form-data"
 const app = express()
 app.use(express.json())
 
-process.on("uncaughtException", err => console.error("🔥 UNCAUGHT:", err))
-process.on("unhandledRejection", err => console.error("🔥 PROMISE ERROR:", err))
+// 🔥 debug crash
+process.on("uncaughtException", err => {
+  console.error("🔥 UNCAUGHT:", err)
+})
 
+process.on("unhandledRejection", err => {
+  console.error("🔥 PROMISE ERROR:", err)
+})
+
+// 👉 OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-// 👉 delay tránh spam API
-const sleep = ms => new Promise(r => setTimeout(r, ms))
-
+// 👉 API chính
 app.post("/api/grade-speaking", async (req, res) => {
   try {
     const { video_url } = req.body
@@ -31,91 +36,46 @@ app.post("/api/grade-speaking", async (req, res) => {
     // ==============================
     const videoRes = await axios.get(video_url, {
       responseType: "arraybuffer",
-      timeout: 30000
+      timeout: 15000
     })
 
     const buffer = Buffer.from(videoRes.data)
-    console.log("📦 SIZE:", buffer.length)
+
+    console.log("✅ Download OK:", buffer.length)
 
     // ==============================
-    // ✅ 2. XỬ LÝ NGẮN / DÀI
+    // ✅ 2. TRANSCRIBE (speech → text)
     // ==============================
-    let fullTranscript = ""
+    const formData = new FormData()
+    formData.append("file", buffer, {
+      filename: "audio.mp4"
+    })
+    formData.append("model", "gpt-4o-transcribe")
 
-    const MAX_DIRECT_SIZE = 6 * 1024 * 1024 // ~6MB
-
-    // 👉 VIDEO NGẮN
-    if (buffer.length <= MAX_DIRECT_SIZE) {
-      console.log("⚡ VIDEO NGẮN")
-
-      const formData = new FormData()
-      formData.append("file", buffer, { filename: "audio.mp4" })
-      formData.append("model", "gpt-4o-transcribe")
-
-      const transcriptRes = await axios.post(
-        "https://api.openai.com/v1/audio/transcriptions",
-        formData,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            ...formData.getHeaders()
-          },
-          timeout: 20000
-        }
-      )
-
-      fullTranscript = transcriptRes.data.text || ""
-
-    } else {
-      // 👉 VIDEO DÀI (CHIA CHUNK)
-      console.log("🐢 VIDEO DÀI → chia nhỏ")
-
-      const chunkSize = 4 * 1024 * 1024
-      const chunks = []
-
-      for (let i = 0; i < buffer.length; i += chunkSize) {
-        chunks.push(buffer.slice(i, i + chunkSize))
+    const transcriptRes = await axios.post(
+      "https://api.openai.com/v1/audio/transcriptions",
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...formData.getHeaders()
+        },
+        timeout: 20000
       }
+    )
 
-      console.log("📦 TOTAL CHUNKS:", chunks.length)
+    const transcript = transcriptRes.data.text || ""
 
-      for (let i = 0; i < chunks.length; i++) {
-        console.log(`🎙️ CHUNK ${i + 1}`)
+    console.log("📝 TEXT:", transcript)
 
-        const formData = new FormData()
-        formData.append("file", chunks[i], {
-          filename: `audio_${i}.mp4`
-        })
-        formData.append("model", "gpt-4o-transcribe")
-
-        const resTrans = await axios.post(
-          "https://api.openai.com/v1/audio/transcriptions",
-          formData,
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-              ...formData.getHeaders()
-            },
-            timeout: 30000
-          }
-        )
-
-        fullTranscript += resTrans.data.text + " "
-
-        await sleep(400)
-      }
-    }
-
-    console.log("📝 FULL TEXT:", fullTranscript)
-
-    if (!fullTranscript) {
+    if (!transcript) {
       return res.json({
-        feedback: "❌ Không nghe rõ nội dung"
+        feedback: "❌ Không nghe rõ, con nói lại nhé!"
       })
     }
 
     // ==============================
-    // ✅ 3. AI CHẤM BÀI NÂNG CẤP
+    // ✅ 3. AI CHẤM BÀI (KAISA AI TEACHER)
     // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -124,23 +84,24 @@ app.post("/api/grade-speaking", async (req, res) => {
         {
           role: "system",
           content: `
-Bạn là giáo viên tiếng Anh tiểu học (6-12 tuổi).
+Bạn là GIÁO VIÊN AI của trung tâm Anh ngữ KAISA.
 
-Quy tắc:
-- Nhận xét ngắn gọn, dễ hiểu
-- Luôn tích cực, động viên
+Nhiệm vụ:
+- Chấm bài nói tiếng Anh cho học sinh tiểu học
+- Nhận xét dễ hiểu, thân thiện
 - Không dùng từ khó
+- Luôn động viên học sinh
 - Không đoán phát âm nếu không chắc
-- Tối đa 120 từ
+- Tổng nội dung dưới 130 từ
 `
         },
         {
           role: "user",
           content: `
-Bài nói:
-"${fullTranscript}"
+Bài nói của học sinh:
+"${transcript}"
 
-Hãy đánh giá theo format:
+Hãy đánh giá theo format CHÍNH XÁC:
 
 🎯 CHẤM ĐIỂM:
 - Phát âm: x/10
@@ -151,26 +112,33 @@ Hãy đánh giá theo format:
 👉 Tổng điểm: x/10
 
 📌 NHẬN XÉT:
-(2 câu ngắn)
+(2 câu ngắn, tích cực, dễ hiểu)
 
 🔊 PHÁT ÂM:
-- chỉ 1 lỗi rõ nhất (nếu có)
-- ví dụ /θ/, /ʃ/
-- nếu không chắc → "Phát âm khá rõ"
+- nếu có lỗi: chỉ ra tối đa 2 từ sai
+- hướng dẫn cách đọc đơn giản (ví dụ /θ/, /ʃ/)
+- nếu không rõ: "Phát âm khá rõ"
 
 📌 NGỮ PHÁP:
-- chỉ ra 1 lỗi chính (thiếu chủ ngữ / sai thì)
+- chỉ ra 1 lỗi quan trọng nhất (thiếu chủ ngữ / sai thì)
 
 ❌ LỖI SAI:
-- câu sai → sửa lại
+- câu sai → sửa lại câu đúng
 
-💡 GỢI Ý:
-- 1 câu tốt hơn
+📈 CẦN CẢI THIỆN:
+- nói rõ học sinh cần cải thiện gì từ bài nói
+
+💡 GỢI Ý LUYỆN TẬP:
+- đưa 1 cách luyện cụ thể
+
+💡 CÂU MẪU:
+- 1 câu nói tốt hơn học sinh có thể dùng
 
 ⭐ ĐÁNH GIÁ:
 - ⭐ 1–5
 
-👉 kết thúc bằng lời khen
+👉 Kết thúc bằng:
+"Giáo viên AI KAISA luôn đồng hành cùng con 💙"
 `
         }
       ]
@@ -179,6 +147,7 @@ Hãy đánh giá theo format:
     let feedback =
       analysis.choices?.[0]?.message?.content || "Không có phản hồi"
 
+    // 👉 tránh lỗi Zalo do quá dài
     if (feedback.length > 1200) {
       feedback = feedback.slice(0, 1200)
     }
@@ -189,7 +158,7 @@ Hãy đánh giá theo format:
     // ✅ 4. TRẢ KẾT QUẢ
     // ==============================
     return res.json({
-      transcript: fullTranscript,
+      transcript,
       feedback
     })
 
@@ -197,16 +166,20 @@ Hãy đánh giá theo format:
     console.error("❌ ERROR:", err.response?.data || err.message)
 
     return res.status(500).json({
-      error: "Lỗi xử lý video"
+      error: "Lỗi xử lý",
+      detail: err.response?.data || err.message
     })
   }
 })
 
+// 👉 test nhanh
 app.get("/", (req, res) => {
   res.send("🚀 Speaking AI API đang chạy")
 })
 
+// 👉 start server
 const PORT = process.env.PORT || 8080
+
 app.listen(PORT, () => {
   console.log("🚀 Server chạy ở port", PORT)
 })
