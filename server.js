@@ -2,22 +2,16 @@ import express from "express"
 import axios from "axios"
 import OpenAI from "openai"
 import FormData from "form-data"
-import ffmpeg from "fluent-ffmpeg"
-import ffmpegPath from "ffmpeg-static"
 import fs from "fs"
-import os from "os"
-import path from "path"
+import ffmpeg from "fluent-ffmpeg"
 
 const app = express()
 app.use(express.json())
 
-ffmpeg.setFfmpegPath(ffmpegPath)
-
-// 🔥 chống crash
+// 🔥 debug
 process.on("uncaughtException", err => {
   console.error("🔥 UNCAUGHT:", err)
 })
-
 process.on("unhandledRejection", err => {
   console.error("🔥 PROMISE ERROR:", err)
 })
@@ -27,80 +21,71 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-
-// ========================================
-// 🎥 API CHẤM VIDEO (IPA + GIÁO VIÊN THẬT)
-// ========================================
+// ==============================
+// 🎥 API CHẤM SPEAKING
+// ==============================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
     const { video_url } = req.body
 
     if (!video_url) {
-      return res.json({ feedback: "❌ Thiếu video" })
+      return res.status(400).json({ error: "Thiếu video_url" })
     }
 
     console.log("🎥 VIDEO:", video_url)
 
-    // ======================
-    // 1. DOWNLOAD
-    // ======================
-    let buffer
-    try {
-      const videoRes = await axios.get(video_url, {
-        responseType: "arraybuffer",
-        timeout: 60000
-      })
-      buffer = Buffer.from(videoRes.data)
-    } catch (err) {
-      return res.json({ feedback: "❌ Không tải được video" })
-    }
+    // ==========================
+    // 1. DOWNLOAD VIDEO
+    // ==========================
+    const videoRes = await axios.get(video_url, {
+      responseType: "arraybuffer",
+      timeout: 30000
+    })
 
-    // ❗ giới hạn an toàn
-    if (buffer.length > 50 * 1024 * 1024) {
-      return res.json({
-        feedback: "❌ Video quá dài (tối đa ~5 phút)"
-      })
-    }
+    const inputPath = "./input.mp4"
+    const outputPath = "./audio.mp3"
 
-    // ======================
-    // 2. CONVERT → AUDIO
-    // ======================
-    const inputPath = path.join(os.tmpdir(), "input.mp4")
-    const outputPath = path.join(os.tmpdir(), "audio.mp3")
+    fs.writeFileSync(inputPath, videoRes.data)
 
-    try {
-      fs.writeFileSync(inputPath, buffer)
+    // ==========================
+    // 2. CONVERT AUDIO (FFMPEG)
+    // ==========================
+    const convertPromise = new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .noVideo()
+        .audioCodec("libmp3lame")
+        .format("mp3")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(outputPath)
+    })
 
-      await new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-          .noVideo()
-          .audioCodec("libmp3lame")
-          .format("mp3")
-          .on("end", resolve)
-          .on("error", reject)
-          .save(outputPath)
-      })
-    } catch (err) {
-      return res.json({
-        feedback: "❌ Video lỗi hoặc không xử lý được"
-      })
-    }
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("FFMPEG TIMEOUT")), 20000)
+    )
+
+    await Promise.race([convertPromise, timeout])
 
     const audioBuffer = fs.readFileSync(outputPath)
 
-    // ======================
-    // 3. TRANSCRIBE
-    // ======================
-    let transcript = ""
+    // 🔥 dọn file
+    fs.unlinkSync(inputPath)
+    fs.unlinkSync(outputPath)
 
-    try {
+    // ==========================
+    // 3. CHIA CHUNK TRANSCRIBE
+    // ==========================
+    const chunkSize = 2 * 1024 * 1024
+    let fullTranscript = ""
+
+    for (let i = 0; i < audioBuffer.length; i += chunkSize) {
+      const chunk = audioBuffer.slice(i, i + chunkSize)
+
       const formData = new FormData()
-      formData.append("file", audioBuffer, {
-        filename: "audio.mp3"
-      })
+      formData.append("file", chunk, { filename: "audio.mp3" })
       formData.append("model", "gpt-4o-transcribe")
 
-      const result = await axios.post(
+      const resTrans = await axios.post(
         "https://api.openai.com/v1/audio/transcriptions",
         formData,
         {
@@ -108,80 +93,70 @@ app.post("/api/grade-speaking", async (req, res) => {
             Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
             ...formData.getHeaders()
           },
-          timeout: 60000
+          timeout: 30000
         }
       )
 
-      transcript = result.data.text || ""
-    } catch (err) {
+      fullTranscript += resTrans.data.text + " "
+    }
+
+    console.log("📝 TEXT:", fullTranscript)
+
+    if (!fullTranscript || fullTranscript.length < 5) {
       return res.json({
-        feedback: "❌ Không nhận diện được giọng nói"
+        feedback: "❌ Con nói nhỏ quá hoặc chưa rõ, thử lại nhé!"
       })
     }
 
-    if (!transcript) {
-      return res.json({
-        feedback: "❌ Không nghe rõ, con nói lại nhé!"
-      })
-    }
+    // ==========================
+    // 4. AI CHẤM (LEVEL GIÁO VIÊN)
+    // ==========================
+    const analysis = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.3,
+      messages: [
+        {
+          role: "system",
+          content: `
+Bạn là GIÁO VIÊN AI của trung tâm KAISA (10 năm kinh nghiệm).
 
-    console.log("📝 TEXT:", transcript)
-
-    // ======================
-    // 4. AI CHẤM IPA LEVEL CAO
-    // ======================
-    let feedback = "❌ Không chấm được"
-
-    try {
-      const analysis = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.3,
-        messages: [
-          {
-            role: "system",
-            content: `
-Bạn là GIÁO VIÊN PHÁT ÂM CHUYÊN SÂU (IPA) của trung tâm KAISA.
-
-Nguyên tắc:
-- Phân tích như giáo viên thật
-- Chỉ ra lỗi phát âm nếu chắc chắn
-- Không đoán nếu không rõ
-- Dùng từ dễ hiểu cho trẻ
-- Luôn động viên
-- Tổng nội dung < 150 từ
+- Nhận xét như giáo viên thật
+- Ưu tiên lỗi quan trọng nhất
+- Ngôn ngữ đơn giản cho trẻ
+- Không đoán phát âm nếu không chắc
+- Tổng nội dung <150 từ
 `
-          },
-          {
-            role: "user",
-            content: `
+        },
+        {
+          role: "user",
+          content: `
 Bài nói:
-"${transcript}"
+"${fullTranscript}"
 
-Hãy chấm:
+Hãy đánh giá:
 
 🎯 CHẤM ĐIỂM:
 - Phát âm: x/10
 - Trôi chảy: x/10
 - Ngữ pháp: x/10
 - Từ vựng: x/10
-
 👉 Tổng điểm: x/10
 
-🔊 PHÁT ÂM CHI TIẾT:
-- 1 lỗi rõ nhất (IPA nếu có)
+🔊 PHÁT ÂM (IPA):
+- 1 từ sai rõ nhất (kèm IPA)
 - cách sửa
 
-📌 NHẬN XÉT:
-(1 câu khen + 1 góp ý)
+📌 NGỮ PHÁP:
+- lỗi quan trọng nhất
 
-❌ LỖI CHÍNH:
-- 1 câu sai → sửa lại
+❌ CÂU SAI:
+- viết lại → sửa
 
 📈 CẦN CẢI THIỆN:
-- 2 điểm
+- 2 điểm cụ thể
 
-💡 BÀI TẬP:
-- 1 bài luyện
+💡 LUYỆN TẬP:
+- 1 cách luyện
 
 💡 CÂU MẪU:
 - 1 câu tốt hơn
@@ -192,19 +167,13 @@ Hãy chấm:
 👉 Kết thúc:
 "Giáo viên AI KAISA luôn đồng hành cùng con 💙"
 `
-          }
-        ]
-      })
+        }
+      ]
+    })
 
-      feedback =
-        analysis.choices?.[0]?.message?.content || "Không có kết quả"
+    let feedback =
+      analysis.choices?.[0]?.message?.content || "Không có kết quả"
 
-    } catch (err) {
-      console.error("❌ AI ERROR:", err)
-      feedback = "❌ Lỗi AI"
-    }
-
-    // tránh lỗi Zalo
     if (feedback.length > 1200) {
       feedback = feedback.slice(0, 1200)
     }
@@ -212,28 +181,27 @@ Hãy chấm:
     console.log("📊 FEEDBACK:", feedback)
 
     return res.json({
-      transcript,
+      transcript: fullTranscript,
       feedback
     })
 
   } catch (err) {
-    console.error("❌ SYSTEM ERROR:", err)
+    console.error("❌ ERROR:", err.message)
 
     return res.json({
-      feedback: "❌ Lỗi hệ thống"
+      feedback: "⚠️ Video hơi dài hoặc lỗi kỹ thuật, thử lại video ngắn hơn nhé!"
     })
   }
 })
 
-
-// ========================================
-// 💬 CHAT AI GIA SƯ (VIỆT + ANH)
-// ========================================
+// ==============================
+// 💬 CHAT AI (GIA SƯ)
+// ==============================
 app.post("/api/chat", async (req, res) => {
   try {
     const { text } = req.body
 
-    const response = await openai.chat.completions.create({
+    const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
@@ -241,10 +209,10 @@ app.post("/api/chat", async (req, res) => {
           content: `
 Bạn là giáo viên AI của KAISA.
 
-- Học sinh nói tiếng Việt → trả lời tiếng Việt
-- Học sinh nói tiếng Anh → trả lời tiếng Anh
-- Giải thích đơn giản
-- Thân thiện
+- Hỏi tiếng Việt → trả lời tiếng Việt
+- Hỏi tiếng Anh → trả lời tiếng Anh
+- Giải thích đơn giản cho trẻ 6-12 tuổi
+- Luôn thân thiện
 `
         },
         {
@@ -254,25 +222,26 @@ Bạn là giáo viên AI của KAISA.
       ]
     })
 
-    res.json({
-      reply: response.choices[0].message.content
+    return res.json({
+      reply: ai.choices?.[0]?.message?.content
     })
 
   } catch (err) {
-    res.json({
-      reply: "❌ Cô chưa trả lời được"
+    return res.json({
+      reply: "❌ Lỗi AI"
     })
   }
 })
 
-
-// ========================================
+// ==============================
+// TEST
+// ==============================
 app.get("/", (req, res) => {
-  res.send("🚀 KAISA AI running")
+  res.send("🚀 KAISA AI chạy OK")
 })
 
+// ==============================
 const PORT = process.env.PORT || 8080
-
 app.listen(PORT, () => {
   console.log("🚀 Server chạy ở port", PORT)
 })
