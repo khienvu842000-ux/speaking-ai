@@ -20,7 +20,7 @@ const openai = new OpenAI({
 })
 
 // ==============================
-// 🎥 CHẤM SPEAKING (KHÔNG FFMPEG)
+// 🎥 CHẤM SPEAKING (STREAM)
 // ==============================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
@@ -33,22 +33,27 @@ app.post("/api/grade-speaking", async (req, res) => {
     console.log("🎥 VIDEO:", video_url)
 
     // ==========================
-    // 1. DOWNLOAD VIDEO
+    // 1. STREAM VIDEO (KHÔNG BUFFER)
     // ==========================
     const videoRes = await axios.get(video_url, {
-      responseType: "arraybuffer",
-      timeout: 30000
+      responseType: "stream",
+      timeout: 20000
     })
 
-    const buffer = Buffer.from(videoRes.data)
+    // 🔥 giới hạn size
+    const size = Number(videoRes.headers["content-length"] || 0)
 
-    console.log("✅ Download:", buffer.length)
+    if (size > 20 * 1024 * 1024) {
+      return res.json({
+        feedback: "⚠️ Video quá dài, vui lòng gửi dưới 2 phút!"
+      })
+    }
 
     // ==========================
-    // 2. TRANSCRIBE TRỰC TIẾP
+    // 2. TRANSCRIBE
     // ==========================
     const formData = new FormData()
-    formData.append("file", buffer, {
+    formData.append("file", videoRes.data, {
       filename: "audio.mp4"
     })
     formData.append("model", "gpt-4o-transcribe")
@@ -61,7 +66,7 @@ app.post("/api/grade-speaking", async (req, res) => {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        timeout: 30000
+        timeout: 20000
       }
     )
 
@@ -152,7 +157,7 @@ Hãy đánh giá:
     console.error("❌ ERROR:", err.message)
 
     return res.json({
-      feedback: "⚠️ Video lỗi hoặc quá dài, thử lại nhé!"
+      feedback: "⚠️ Lỗi xử lý, thử lại video ngắn hơn nhé!"
     })
   }
 })
@@ -171,9 +176,10 @@ app.post("/api/chat", async (req, res) => {
           role: "system",
           content: `
 Bạn là giáo viên AI KAISA.
+
 - Hỏi tiếng Việt → trả lời tiếng Việt
 - Hỏi tiếng Anh → trả lời tiếng Anh
-- Giải thích đơn giản, thân thiện
+- Giải thích dễ hiểu cho trẻ
 `
         },
         {
@@ -188,13 +194,15 @@ Bạn là giáo viên AI KAISA.
     })
 
   } catch {
-    return res.json({ reply: "❌ Lỗi AI" })
+    return res.json({
+      reply: "❌ Lỗi AI"
+    })
   }
 })
 
 // ==============================
 app.get("/", (req, res) => {
-  res.send("🚀 KAISA AI OK")
+  res.send("🚀 KAISA AI PRODUCTION OK")
 })
 
 // ==============================
