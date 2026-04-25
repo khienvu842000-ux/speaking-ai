@@ -3,16 +3,10 @@ import axios from "axios"
 import OpenAI from "openai"
 import FormData from "form-data"
 
+console.log("🔥 APP STARTING...")
+
 const app = express()
 app.use(express.json())
-
-// 🔥 chống crash
-process.on("uncaughtException", err => {
-  console.error("🔥 UNCAUGHT:", err)
-})
-process.on("unhandledRejection", err => {
-  console.error("🔥 PROMISE ERROR:", err)
-})
 
 // 👉 OpenAI
 const openai = new OpenAI({
@@ -20,7 +14,7 @@ const openai = new OpenAI({
 })
 
 // ==============================
-// 🎥 CHẤM SPEAKING (STREAM)
+// 🎥 CHẤM SPEAKING (STREAM - KHÔNG BỊ KILL)
 // ==============================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
@@ -32,26 +26,23 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     console.log("🎥 VIDEO:", video_url)
 
-    // ==========================
-    // 1. STREAM VIDEO (KHÔNG BUFFER)
-    // ==========================
+    // 🔥 STREAM (không dùng buffer)
     const videoRes = await axios.get(video_url, {
       responseType: "stream",
       timeout: 20000
     })
 
-    // 🔥 giới hạn size
     const size = Number(videoRes.headers["content-length"] || 0)
 
     if (size > 20 * 1024 * 1024) {
       return res.json({
-        feedback: "⚠️ Video quá dài, vui lòng gửi dưới 2 phút!"
+        feedback: "⚠️ Video quá dài, gửi dưới 2 phút nhé!"
       })
     }
 
-    // ==========================
-    // 2. TRANSCRIBE
-    // ==========================
+    // ==============================
+    // TRANSCRIBE
+    // ==============================
     const formData = new FormData()
     formData.append("file", videoRes.data, {
       filename: "audio.mp4"
@@ -74,15 +65,15 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     console.log("📝 TEXT:", transcript)
 
-    if (!transcript || transcript.length < 5) {
+    if (!transcript) {
       return res.json({
-        feedback: "❌ Con nói chưa rõ, thử lại nhé!"
+        feedback: "❌ Không nghe rõ, con nói lại nhé!"
       })
     }
 
-    // ==========================
-    // 3. AI CHẤM (LEVEL GIÁO VIÊN)
-    // ==========================
+    // ==============================
+    // AI CHẤM (LEVEL GIÁO VIÊN)
+    // ==============================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.3,
@@ -90,50 +81,30 @@ app.post("/api/grade-speaking", async (req, res) => {
         {
           role: "system",
           content: `
-Bạn là giáo viên AI của trung tâm KAISA.
+Bạn là giáo viên AI KAISA.
 
-- Nhận xét như giáo viên thật
+- Nhận xét dễ hiểu cho học sinh
 - Ưu tiên lỗi quan trọng nhất
-- Ngôn ngữ đơn giản cho trẻ
-- Không đoán phát âm nếu không chắc
-- Nội dung <150 từ
+- Không dùng từ khó
+- Tổng nội dung <150 từ
 `
         },
         {
           role: "user",
           content: `
-Bài nói:
 "${transcript}"
 
-Hãy đánh giá:
+Hãy chấm:
+- phát âm
+- trôi chảy
+- ngữ pháp
+- từ vựng
 
-🎯 CHẤM ĐIỂM:
-- Phát âm: x/10
-- Trôi chảy: x/10
-- Ngữ pháp: x/10
-- Từ vựng: x/10
-👉 Tổng điểm: x/10
-
-🔊 PHÁT ÂM:
-- 1 lỗi rõ nhất + cách sửa
-
-📌 NGỮ PHÁP:
-- lỗi chính
-
-❌ CÂU SAI:
-- sửa lại
-
-📈 CẦN CẢI THIỆN:
-- 2 điểm
-
-💡 CÂU MẪU:
-- 1 câu tốt hơn
-
-⭐ ĐÁNH GIÁ:
-⭐ 1–5
-
-👉 Kết thúc:
-"Giáo viên AI KAISA luôn đồng hành cùng con 💙"
++ tổng điểm
++ lỗi chính
++ cách sửa
++ gợi ý cải thiện
++ 1 câu mẫu tốt hơn
 `
         }
       ]
@@ -179,7 +150,7 @@ Bạn là giáo viên AI KAISA.
 
 - Hỏi tiếng Việt → trả lời tiếng Việt
 - Hỏi tiếng Anh → trả lời tiếng Anh
-- Giải thích dễ hiểu cho trẻ
+- Giải thích đơn giản
 `
         },
         {
@@ -193,7 +164,8 @@ Bạn là giáo viên AI KAISA.
       reply: ai.choices?.[0]?.message?.content
     })
 
-  } catch {
+  } catch (err) {
+    console.error("❌ CHAT ERROR:", err)
     return res.json({
       reply: "❌ Lỗi AI"
     })
@@ -201,12 +173,22 @@ Bạn là giáo viên AI KAISA.
 })
 
 // ==============================
+// TEST
+// ==============================
 app.get("/", (req, res) => {
-  res.send("🚀 KAISA AI PRODUCTION OK")
+  res.send("🚀 KAISA AI OK")
 })
 
 // ==============================
-const PORT = process.env.PORT || 8080
-app.listen(PORT, () => {
-  console.log("🚀 Server chạy ở port", PORT)
+// 🔥 FIX RAILWAY (QUAN TRỌNG NHẤT)
+// ==============================
+const PORT = process.env.PORT
+
+if (!PORT) {
+  console.error("❌ PORT undefined")
+  process.exit(1)
+}
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("🚀 SERVER READY:", PORT)
 })
