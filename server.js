@@ -4,11 +4,15 @@ import OpenAI from "openai"
 import FormData from "form-data"
 import fs from "fs"
 import ffmpeg from "fluent-ffmpeg"
+import ffmpegPath from "ffmpeg-static"
+
+// 🔥 QUAN TRỌNG: fix ffmpeg trên Railway
+ffmpeg.setFfmpegPath(ffmpegPath)
 
 const app = express()
 app.use(express.json())
 
-// 🔥 debug
+// 🔥 chống crash
 process.on("uncaughtException", err => {
   console.error("🔥 UNCAUGHT:", err)
 })
@@ -48,7 +52,7 @@ app.post("/api/grade-speaking", async (req, res) => {
     fs.writeFileSync(inputPath, videoRes.data)
 
     // ==========================
-    // 2. CONVERT AUDIO (FFMPEG)
+    // 2. CONVERT AUDIO
     // ==========================
     const convertPromise = new Promise((resolve, reject) => {
       ffmpeg(inputPath)
@@ -104,12 +108,12 @@ app.post("/api/grade-speaking", async (req, res) => {
 
     if (!fullTranscript || fullTranscript.length < 5) {
       return res.json({
-        feedback: "❌ Con nói nhỏ quá hoặc chưa rõ, thử lại nhé!"
+        feedback: "❌ Con nói chưa rõ, thử lại nhé!"
       })
     }
 
     // ==========================
-    // 4. AI CHẤM (LEVEL GIÁO VIÊN)
+    // 4. AI CHẤM (NÂNG CẤP)
     // ==========================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -118,13 +122,13 @@ app.post("/api/grade-speaking", async (req, res) => {
         {
           role: "system",
           content: `
-Bạn là GIÁO VIÊN AI của trung tâm KAISA (10 năm kinh nghiệm).
+Bạn là giáo viên AI của trung tâm KAISA.
 
 - Nhận xét như giáo viên thật
 - Ưu tiên lỗi quan trọng nhất
 - Ngôn ngữ đơn giản cho trẻ
 - Không đoán phát âm nếu không chắc
-- Tổng nội dung <150 từ
+- Nội dung <150 từ
 `
         },
         {
@@ -142,21 +146,17 @@ Hãy đánh giá:
 - Từ vựng: x/10
 👉 Tổng điểm: x/10
 
-🔊 PHÁT ÂM (IPA):
-- 1 từ sai rõ nhất (kèm IPA)
-- cách sửa
+🔊 PHÁT ÂM:
+- 1 lỗi rõ nhất + cách sửa
 
 📌 NGỮ PHÁP:
-- lỗi quan trọng nhất
+- lỗi chính
 
 ❌ CÂU SAI:
-- viết lại → sửa
+- sửa lại
 
 📈 CẦN CẢI THIỆN:
-- 2 điểm cụ thể
-
-💡 LUYỆN TẬP:
-- 1 cách luyện
+- 2 điểm
 
 💡 CÂU MẪU:
 - 1 câu tốt hơn
@@ -186,16 +186,16 @@ Hãy đánh giá:
     })
 
   } catch (err) {
-    console.error("❌ ERROR:", err.message)
+    console.error("❌ ERROR:", err)
 
     return res.json({
-      feedback: "⚠️ Video hơi dài hoặc lỗi kỹ thuật, thử lại video ngắn hơn nhé!"
+      feedback: "⚠️ Video lỗi hoặc quá dài, thử lại nhé!"
     })
   }
 })
 
 // ==============================
-// 💬 CHAT AI (GIA SƯ)
+// 💬 CHAT AI
 // ==============================
 app.post("/api/chat", async (req, res) => {
   try {
@@ -208,11 +208,8 @@ app.post("/api/chat", async (req, res) => {
           role: "system",
           content: `
 Bạn là giáo viên AI của KAISA.
-
-- Hỏi tiếng Việt → trả lời tiếng Việt
-- Hỏi tiếng Anh → trả lời tiếng Anh
-- Giải thích đơn giản cho trẻ 6-12 tuổi
-- Luôn thân thiện
+- Trả lời theo ngôn ngữ học sinh dùng
+- Giải thích dễ hiểu
 `
         },
         {
@@ -226,18 +223,14 @@ Bạn là giáo viên AI của KAISA.
       reply: ai.choices?.[0]?.message?.content
     })
 
-  } catch (err) {
-    return res.json({
-      reply: "❌ Lỗi AI"
-    })
+  } catch {
+    return res.json({ reply: "❌ Lỗi AI" })
   }
 })
 
 // ==============================
-// TEST
-// ==============================
 app.get("/", (req, res) => {
-  res.send("🚀 KAISA AI chạy OK")
+  res.send("🚀 KAISA AI OK")
 })
 
 // ==============================
