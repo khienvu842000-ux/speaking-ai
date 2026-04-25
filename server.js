@@ -2,12 +2,6 @@ import express from "express"
 import axios from "axios"
 import OpenAI from "openai"
 import FormData from "form-data"
-import fs from "fs"
-import ffmpeg from "fluent-ffmpeg"
-import ffmpegPath from "ffmpeg-static"
-
-// 🔥 QUAN TRỌNG: fix ffmpeg trên Railway
-ffmpeg.setFfmpegPath(ffmpegPath)
 
 const app = express()
 app.use(express.json())
@@ -26,7 +20,7 @@ const openai = new OpenAI({
 })
 
 // ==============================
-// 🎥 API CHẤM SPEAKING
+// 🎥 CHẤM SPEAKING (KHÔNG FFMPEG)
 // ==============================
 app.post("/api/grade-speaking", async (req, res) => {
   try {
@@ -46,74 +40,43 @@ app.post("/api/grade-speaking", async (req, res) => {
       timeout: 30000
     })
 
-    const inputPath = "./input.mp4"
-    const outputPath = "./audio.mp3"
+    const buffer = Buffer.from(videoRes.data)
 
-    fs.writeFileSync(inputPath, videoRes.data)
+    console.log("✅ Download:", buffer.length)
 
     // ==========================
-    // 2. CONVERT AUDIO
+    // 2. TRANSCRIBE TRỰC TIẾP
     // ==========================
-    const convertPromise = new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .noVideo()
-        .audioCodec("libmp3lame")
-        .format("mp3")
-        .on("end", resolve)
-        .on("error", reject)
-        .save(outputPath)
+    const formData = new FormData()
+    formData.append("file", buffer, {
+      filename: "audio.mp4"
     })
+    formData.append("model", "gpt-4o-transcribe")
 
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("FFMPEG TIMEOUT")), 20000)
+    const transcriptRes = await axios.post(
+      "https://api.openai.com/v1/audio/transcriptions",
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...formData.getHeaders()
+        },
+        timeout: 30000
+      }
     )
 
-    await Promise.race([convertPromise, timeout])
+    const transcript = transcriptRes.data.text || ""
 
-    const audioBuffer = fs.readFileSync(outputPath)
+    console.log("📝 TEXT:", transcript)
 
-    // 🔥 dọn file
-    fs.unlinkSync(inputPath)
-    fs.unlinkSync(outputPath)
-
-    // ==========================
-    // 3. CHIA CHUNK TRANSCRIBE
-    // ==========================
-    const chunkSize = 2 * 1024 * 1024
-    let fullTranscript = ""
-
-    for (let i = 0; i < audioBuffer.length; i += chunkSize) {
-      const chunk = audioBuffer.slice(i, i + chunkSize)
-
-      const formData = new FormData()
-      formData.append("file", chunk, { filename: "audio.mp3" })
-      formData.append("model", "gpt-4o-transcribe")
-
-      const resTrans = await axios.post(
-        "https://api.openai.com/v1/audio/transcriptions",
-        formData,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            ...formData.getHeaders()
-          },
-          timeout: 30000
-        }
-      )
-
-      fullTranscript += resTrans.data.text + " "
-    }
-
-    console.log("📝 TEXT:", fullTranscript)
-
-    if (!fullTranscript || fullTranscript.length < 5) {
+    if (!transcript || transcript.length < 5) {
       return res.json({
         feedback: "❌ Con nói chưa rõ, thử lại nhé!"
       })
     }
 
     // ==========================
-    // 4. AI CHẤM (NÂNG CẤP)
+    // 3. AI CHẤM (LEVEL GIÁO VIÊN)
     // ==========================
     const analysis = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -135,7 +98,7 @@ Bạn là giáo viên AI của trung tâm KAISA.
           role: "user",
           content: `
 Bài nói:
-"${fullTranscript}"
+"${transcript}"
 
 Hãy đánh giá:
 
@@ -181,12 +144,12 @@ Hãy đánh giá:
     console.log("📊 FEEDBACK:", feedback)
 
     return res.json({
-      transcript: fullTranscript,
+      transcript,
       feedback
     })
 
   } catch (err) {
-    console.error("❌ ERROR:", err)
+    console.error("❌ ERROR:", err.message)
 
     return res.json({
       feedback: "⚠️ Video lỗi hoặc quá dài, thử lại nhé!"
@@ -207,9 +170,10 @@ app.post("/api/chat", async (req, res) => {
         {
           role: "system",
           content: `
-Bạn là giáo viên AI của KAISA.
-- Trả lời theo ngôn ngữ học sinh dùng
-- Giải thích dễ hiểu
+Bạn là giáo viên AI KAISA.
+- Hỏi tiếng Việt → trả lời tiếng Việt
+- Hỏi tiếng Anh → trả lời tiếng Anh
+- Giải thích đơn giản, thân thiện
 `
         },
         {
